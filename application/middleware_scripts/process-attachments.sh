@@ -62,27 +62,52 @@ esac; done; shift $(( ${OPTIND} - 1 ))
 
 [ -d "${the_dropdir}" ] || exerr "Can't access drop directory"
 
-# If the passed to us a config file to parse, source it
+# If we're passed a config file to parse, source it
 [ "${the_config}" -a -r "${the_config}" ] && . "${the_config}"
+
+unset my_dispatcher
+if [ "${the_jdispatcher_dir}" ]; then
+  my_dispatcher=$( "${the_jdispatcher_dir}"/claim )
+
+  # If we can not allocate a dispatcher here, return an error
+  # TODO: report, what went wrong, maybe wait
+  [ $? -eq 0 -a "${my_dispatcher}" ] || exit 1
+
+  cleanser_ippport=read < "${my_dispatcher}"/ip
+  [ "${cleanser_ippport}" ] || exit 1
+
+  # Setup cleanser ip and port
+  the_cleanser=${cleanser_ippport%%:*}
+  the_ssh_conf="-p ${cleanser_ippport##*:}"
+
+  # If we were asked to use jdispatch but can not deduct how
+  # to connect, return an error
+  [ "${the_cleanser}" ] || exit 1
+fi
 
 # If we have a remote cleanser host, clean the attachments there
 if [ "${the_cleanser}" ]; then
-  the_ssh_conf="-o PasswordAuthentication=no"
+  the_ssh_conf="${the_ssh_conf} -o PasswordAuthentication=no"
   [ "${the_cleanser_ssh_conf}" ] && the_ssh_conf="-F ${the_cleanser_ssh_conf} ${the_ssh_conf}"
   the_remote_dir=`basename "${the_dropdir}"`
 
   # copy over the attachments
   scp ${the_ssh_conf} -r ${the_dropdir} ${the_cleanser}:${the_remote_dir}
+  [ $? -eq 0 ] || exit $?
 
   # execute remote cleanser job
   ssh ${the_ssh_conf} ${the_cleanser} process-attachments.sh -d ${the_remote_dir}
   the_return_code=$?
 
-  # get back the result
+  # get back the result (and error code)
   scp ${the_ssh_conf} -r ${the_cleanser}:${the_remote_dir} `dirname ${the_dropdir}`
 
-  # remove remote dir
-  ssh ${the_ssh_conf} ${the_cleanser} rm -r ${the_remote_dir}
+  # remove remote dir or release jail to jdispatcher
+  if [ "${my_dispatcher}" ]; then
+    ${my_dispatcher}/release
+  else
+    ssh ${the_ssh_conf} ${the_cleanser} rm -r ${the_remote_dir}
+  fi
 
   exit ${the_return_code}
 fi
